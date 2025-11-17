@@ -1,5 +1,6 @@
 # app/rag.py
 
+import os
 import gc
 import torch
 import ctypes
@@ -7,8 +8,8 @@ import platform
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from urllib.parse import urlparse
-
 import warnings
+
 warnings.filterwarnings("ignore")
 
 
@@ -30,13 +31,31 @@ def aggressive_memory_cleanup():
 
 
 ############################################################
-# Database Connector (policychunk 전용)
+# Database Connector  (env: DATABASE_URL 직접 파싱)
 ############################################################
 
 class DatabaseConnector:
-    def __init__(self, config: Dict):
-        self.config = config
+    def __init__(self):
+        raw_url = os.getenv("DATABASE_URL")
+        if not raw_url:
+            raise RuntimeError("환경변수 DATABASE_URL 이 설정되어 있지 않습니다.")
+
+        # postgres:// → postgresql:// 로 정규화
+        if raw_url.startswith("postgres://"):
+            raw_url = raw_url.replace("postgres://", "postgresql://", 1)
+
+        parsed = urlparse(raw_url)
+
+        self.config = {
+            "host": parsed.hostname,
+            "port": parsed.port,
+            "database": parsed.path.lstrip("/"),
+            "user": parsed.username,
+            "password": parsed.password,
+        }
+
         self.connection = None
+        print(f"[DB] config 사용: db={self.config['database']} host={self.config['host']}")
 
     def connect(self) -> bool:
         try:
@@ -51,6 +70,7 @@ class DatabaseConnector:
     def disconnect(self):
         if self.connection:
             self.connection.close()
+            self.connection = None
 
     def get_policy_chunks(self, limit: int = 300):
         """
@@ -64,15 +84,19 @@ class DatabaseConnector:
         try:
             from psycopg2.extras import RealDictCursor
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("""
+
+            cursor.execute(
+                """
                 SELECT chunk_id, product_id, chunk_text
                 FROM policychunk
                 LIMIT %s
-            """, (limit,))
+                """,
+                (limit,),
+            )
             rows = cursor.fetchall()
             cursor.close()
 
-            print(f"[DB] {len(rows)}개 policychunk 로드됨")
+            print(f"[DB] policychunk {len(rows)}개 로드됨")
             return rows
 
         except Exception as e:
@@ -81,7 +105,7 @@ class DatabaseConnector:
 
 
 ############################################################
-# Embedding Model
+# Embedding Model  (BAAI/bge-m3)
 ############################################################
 
 class EmbeddingModel:
@@ -92,6 +116,7 @@ class EmbeddingModel:
     def load(self):
         print("[EMB] 임베딩 모델 로딩…")
         from FlagEmbedding import BGEM3FlagModel
+
         self.model = BGEM3FlagModel(self.model_name, use_fp16=False)
         print("[EMB] 로드 완료")
 
@@ -99,14 +124,14 @@ class EmbeddingModel:
         if self.model is None:
             self.load()
 
-        result = self.model.encode(
+        out = self.model.encode(
             texts,
             batch_size=8,
             return_dense=True,
             return_sparse=False,
             return_colbert_vecs=False,
         )
-        return result["dense_vecs"]
+        return out["dense_vecs"]
 
     def unload(self):
         print("[EMB] 언로드")
@@ -116,13 +141,13 @@ class EmbeddingModel:
 
 
 ############################################################
-# Vector Store (메모리 기반 검색)
+# Vector Store (메모리 기반)
 ############################################################
 
 class VectorStore:
     def __init__(self):
-        self.documents = []
-        self.embeddings = None
+        self.documents: List[Dict] = []
+        self.embeddings: Optional[np.ndarray] = None
 
     def load(self, docs: List[Dict], embeddings: np.ndarray):
         self.documents = docs
@@ -135,16 +160,18 @@ class VectorStore:
             return []
 
         q = query_embedding[0]
-        scores = []
+        scores: List[Tuple[int, float]] = []
 
         for i, emb in enumerate(self.embeddings):
             emb_vec = emb[0] if emb.ndim > 1 else emb
-            sim = np.dot(q, emb_vec) / (np.linalg.norm(q) * np.linalg.norm(emb_vec))
-            scores.append((i, float(sim)))
+            sim = float(
+                np.dot(q, emb_vec)
+                / (np.linalg.norm(q) * np.linalg.norm(emb_vec) + 1e-8)
+            )
+            scores.append((i, sim))
 
         scores.sort(key=lambda x: x[1], reverse=True)
-        results = [(self.documents[idx], score) for idx, score in scores[:k]]
-        return results
+        return [(self.documents[idx], score) for idx, score in scores[:k]]
 
 
 ############################################################
@@ -165,29 +192,34 @@ class LanguageModel:
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name, torch_dtype=torch.float32, trust_remote_code=True
         ).eval()
-
         print("[LLM] 로딩 완료")
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, max_new_tokens: int = 350) -> str:
         if self.model is None:
             self.load()
 
         try:
-            inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=800)
+            inputs = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=800,
+            )
 
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=350,
+                max_new_tokens=max_new_tokens,
                 temperature=0.7,
                 do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id
+                pad_token_id=self.tokenizer.eos_token_id,
             )
 
             text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            text = text.replace(prompt, "").strip()
-            return text
-        except:
-            return "답변 생성 오류"
+            return text.replace(prompt, "").strip()
+
+        except Exception as e:
+            print(f"[LLM] 생성 오류: {e}")
+            return "답변 생성 중 오류가 발생했습니다."
         finally:
             aggressive_memory_cleanup()
 
@@ -201,19 +233,18 @@ class LanguageModel:
 
 
 ############################################################
-# RAG SYSTEM (policychunk 최적화 버전)
+# RAG SYSTEM
 ############################################################
 
 class RAGSystem:
-    def __init__(self, db_config):
-        self.db = DatabaseConnector(db_config)
+    def __init__(self):
+        self.db = DatabaseConnector()
         self.emb = EmbeddingModel()
         self.llm = LanguageModel()
         self.vs = VectorStore()
 
-    def initialize(self, limit=300):
+    def initialize(self, limit: int = 300):
         print("\n=== RAG 초기화 시작 ===")
-
         if not self.db.connect():
             print("[RAG] DB 연결 실패")
             return False
@@ -246,8 +277,8 @@ class RAGSystem:
             return {"answer": "관련 정보 없음", "sources": []}
 
         context = "\n".join(
-            f"[{i+1}] {d['chunk_text'][:250]}"
-            for i, (d, _) in enumerate(retrieved)
+            f"[{i+1}] {doc['chunk_text'][:250]}"
+            for i, (doc, _) in enumerate(retrieved)
         )
 
         prompt = f"""
@@ -258,29 +289,30 @@ class RAGSystem:
 
 답변:"""
 
-        answer = self.llm.generate(prompt)
-
+        answer = self.llm.generate(prompt, max_new_tokens=300)
         return {
             "answer": answer,
-            "sources": [d["chunk_id"] for d, _ in retrieved]
+            "sources": [doc["chunk_id"] for doc, _ in retrieved],
         }
 
 
 ############################################################
-# 전역 인스턴스 (FastAPI에서 사용)
+# 전역 인스턴스 + 헬퍼
 ############################################################
 
 _rag_instance: Optional[RAGSystem] = None
 
-def init_rag(db_config):
+
+def init_rag():
     global _rag_instance
     if _rag_instance is None:
-        rag = RAGSystem(db_config)
+        rag = RAGSystem()
         rag.initialize(limit=300)
         _rag_instance = rag
     return True
 
+
 def answer_with_rag(question: str):
     if _rag_instance is None:
-        raise RuntimeError("RAG 초기화 필요")
+        raise RuntimeError("RAG가 초기화되지 않았습니다. init_rag() 먼저 호출하세요.")
     return _rag_instance.answer(question)
