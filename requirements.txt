@@ -9,3 +9,5 @@ sentence-transformers==3.2.1
 torch
 transformers
 FlagEmbedding
+openai>=1.0.0
+requests
