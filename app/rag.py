@@ -115,28 +115,25 @@ class DatabaseConnector:
         if self.connection:
             self.connection.close()
             self.connection = None
-
+    
     def get_policy_chunks(self, limit=1000):
-    try:
-        from psycopg2.extras import RealDictCursor
-        cur = self.connection.cursor(cursor_factory=RealDictCursor)
-
-        cur.execute("""
-            SELECT 
-                id AS chunk_id,
-                product_id,
-                original_text AS chunk_text
-            FROM insurance_clauses
-            LIMIT %s
-        """, (limit,))
-
-        rows = cur.fetchall()
-        cur.close()
-        print(f"[DB] 로드 {len(rows)}개")
-        return rows
-    except Exception as e:
-        print(f"[DB 조회 오류] {e}")
-        return []
+        try:
+            from psycopg2.extras import RealDictCursor
+            cur = self.connection.cursor(cursor_factory=RealDictCursor)
+    
+            cur.execute("""
+                SELECT
+                    id AS chunk_id,
+                    product_id,
+                    original_text AS chunk_text
+                FROM insurance_clauses
+                LIMIT %s
+            """, (limit,))
+    
+            rows = cur.fetchall()
+            cur.close()
+            print(f"[DB] 로드 {len(rows)}개")
+            return rows
 
 
 ############################################################
