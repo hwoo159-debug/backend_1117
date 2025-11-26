@@ -116,7 +116,7 @@ class DatabaseConnector:
             self.connection.close()
             self.connection = None
 
-    def get_policy_chunks(self, limit=300):
+    def get_policy_chunks(self, limit=1000):
         try:
             from psycopg2.extras import RealDictCursor
             cur = self.connection.cursor(cursor_factory=RealDictCursor)
@@ -175,7 +175,7 @@ class RAGSystem:
         self.db = DatabaseConnector()
         self.vs = VectorStore()
 
-    def initialize(self, limit=300):
+    def initialize(self, limit=1000):
         print("\n=== RAG 초기화 ===")
 
         if not self.db.connect():
