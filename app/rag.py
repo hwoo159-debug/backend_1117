@@ -115,12 +115,12 @@ class DatabaseConnector:
         if self.connection:
             self.connection.close()
             self.connection = None
-    
-    def get_policy_chunks(self, limit=1000):
+
+    def get_policy_chunks(self, limit: int = 1000):
         try:
             from psycopg2.extras import RealDictCursor
             cur = self.connection.cursor(cursor_factory=RealDictCursor)
-    
+
             cur.execute("""
                 SELECT
                     id AS chunk_id,
@@ -129,11 +129,14 @@ class DatabaseConnector:
                 FROM insurance_clauses
                 LIMIT %s
             """, (limit,))
-    
+
             rows = cur.fetchall()
             cur.close()
             print(f"[DB] 로드 {len(rows)}개")
             return rows
+        except Exception as e:
+            print(f"[DB 조회 오류] {e}")
+            return []
 
 
 ############################################################
@@ -177,7 +180,7 @@ class RAGSystem:
         self.db = DatabaseConnector()
         self.vs = VectorStore()
 
-    def initialize(self, limit=1000):
+    def initialize(self, limit: int = 1000):
         print("\n=== RAG 초기화 ===")
 
         if not self.db.connect():
@@ -245,7 +248,7 @@ def init_rag():
     global _rag_instance
     if _rag_instance is None:
         rag = RAGSystem()
-        rag.initialize()
+        rag.initialize()  # 기본 limit=1000
         _rag_instance = rag
     return True
 
