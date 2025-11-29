@@ -4,6 +4,7 @@ import ctypes
 import platform
 import numpy as np
 import requests
+import json
 from typing import Dict, List, Tuple, Optional
 from urllib.parse import urlparse
 import warnings
@@ -116,7 +117,7 @@ class DatabaseConnector:
             self.connection.close()
             self.connection = None
 
-    def get_policy_chunks(self, limit: int = 2000):
+    def get_policy_chunks(self, limit: int = 20000):
         """
         DB_InsData.insurance_clauses 에서 약관 청크를 읽어온다.
         각 row가 곧 하나의 청크.
@@ -131,6 +132,7 @@ class DatabaseConnector:
                     product_id  AS product_id,
                     -- search_text가 비어 있으면 original_text로 fallback
                     COALESCE(search_text, original_text) AS chunk_text
+                    embedding   AS embedding
                 FROM insurance_clauses
                 WHERE COALESCE(search_text, original_text) IS NOT NULL
                 LIMIT %s
@@ -186,7 +188,7 @@ class RAGSystem:
         self.db = DatabaseConnector()
         self.vs = VectorStore()
 
-    def initialize(self, limit: int = 2000):
+    def initialize(self, limit: int = 20000):
         print("\n=== RAG 초기화 ===")
 
         if not self.db.connect():
@@ -197,9 +199,20 @@ class RAGSystem:
             self.db.disconnect()
             return False
 
-        texts = [str(d["chunk_text"])[:800] for d in docs]
+        # texts = [str(d["chunk_text"])[:800] for d in docs]
+        # embeddings = embed_with_jina(texts) 주석처리
+          emb_list = []
+        for d in docs:
+            raw = d.get("embedding")
+            if isinstance(raw, str):
+                # 문자열이면 JSON 리스트 파싱
+                vec = json.loads(raw)
+            else:
+                # 이미 리스트/array면 그대로
+                vec = raw
+            emb_list.append(vec)
 
-        embeddings = embed_with_jina(texts)
+        embeddings = np.array(emb_list, dtype="float32")
         self.vs.load(docs, embeddings)
 
         self.db.disconnect()
