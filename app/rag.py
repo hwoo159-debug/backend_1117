@@ -130,7 +130,6 @@ class DatabaseConnector:
                 SELECT
                     id          AS chunk_id,
                     product_id  AS product_id,
-                    -- search_text가 비어 있으면 original_text로 fallback
                     COALESCE(search_text, original_text) AS chunk_text
                     embedding   AS embedding
                 FROM insurance_clauses
