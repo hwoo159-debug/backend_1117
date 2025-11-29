@@ -54,7 +54,7 @@ def call_llm_api(prompt: str) -> str:
 ############################################################
 
 JINA_API_KEY = os.getenv("JINA_API_KEY")
-JINA_EMBED_MODEL = os.getenv("JINA_EMBED_MODEL", "jina-embeddings-v2-base")
+JINA_EMBED_MODEL = "jina-embeddings-v2-base"
 
 def embed_with_jina(texts: List[str]) -> np.ndarray:
     url = "https://api.jina.ai/v1/embeddings"
