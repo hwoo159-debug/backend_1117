@@ -3,8 +3,9 @@ import gc
 import ctypes
 import platform
 import numpy as np
-import requests
+import requests  # 현재는 사용하지 않지만, 혹시 모를 확장을 위해 남겨둠
 import json
+import re
 from typing import Dict, List, Tuple, Optional
 from urllib.parse import urlparse
 import warnings
@@ -48,34 +49,36 @@ def call_llm_api(prompt: str) -> str:
         print(f"[LLM ERROR] {e}")
         return "LLM 생성 오류가 발생했습니다."
 
-
 ############################################################
-# Jina Embedding API
+# 간단 로컬 임베딩 (Jina 완전 제거용)
 ############################################################
 
-JINA_API_KEY = os.getenv("JINA_API_KEY")
-JINA_EMBED_MODEL = "jina-embeddings-v2-base"
+LOCAL_EMBED_DIM = int(os.getenv("LOCAL_EMBED_DIM", "512"))
 
-def embed_with_jina(texts: List[str]) -> np.ndarray:
-    url = "https://api.jina.ai/v1/embeddings"
-    headers = {
-        "Authorization": f"Bearer {JINA_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "input": texts,
-        "model": JINA_EMBED_MODEL
-    }
+_token_pattern = re.compile(r"[가-힣A-Za-z0-9]+")
 
-    try:
-        res = requests.post(url, json=data, headers=headers)
-        res.raise_for_status()
-        vectors = [item["embedding"] for item in res.json()["data"]]
-        return np.array(vectors, dtype="float32")
-    except Exception as e:
-        print(f"[EMBED ERROR] {e}")
-        return np.zeros((len(texts), 1024), dtype="float32")
+def simple_tokenize(text: str) -> List[str]:
+    text = "" if text is None else str(text)
+    return _token_pattern.findall(text.lower())
 
+def simple_embed(texts: List[str], dim: int = LOCAL_EMBED_DIM) -> np.ndarray:
+    """
+    외부 API 없이 동작하는 해시 기반 임베딩.
+    - 단어를 토큰화한 뒤 hash(token) % dim 위치에 카운트를 더함
+    - 마지막에 L2 normalize
+    """
+    n = len(texts)
+    vecs = np.zeros((n, dim), dtype="float32")
+
+    for i, t in enumerate(texts):
+        tokens = simple_tokenize(t)
+        for tok in tokens:
+            h = hash(tok) % dim
+            vecs[i, h] += 1.0
+
+    norms = np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-8
+    vecs = vecs / norms
+    return vecs
 
 ############################################################
 # Database Connector
@@ -125,7 +128,7 @@ class DatabaseConnector:
         try:
             from psycopg2.extras import RealDictCursor
             cur = self.connection.cursor(cursor_factory=RealDictCursor)
-    
+
             cur.execute("""
                 SELECT
                     id          AS chunk_id,
@@ -136,7 +139,7 @@ class DatabaseConnector:
                 WHERE COALESCE(search_text, original_text) IS NOT NULL
                 LIMIT %s
             """, (limit,))
-    
+
             rows = cur.fetchall()
             cur.close()
             print(f"[DB] 보험약관 로드 {len(rows)}개")
@@ -152,26 +155,38 @@ class DatabaseConnector:
 
 class VectorStore:
     def __init__(self):
-        self.documents = []
-        self.embeddings = None
+        self.documents: List[Dict] = []
+        self.embeddings: Optional[np.ndarray] = None  # shape: (N, D)
 
     def load(self, docs: List[Dict], embeddings: np.ndarray):
         self.documents = docs
         self.embeddings = embeddings
-        print(f"[VS] 벡터스토어 구축: {len(docs)}개")
+        print(f"[VS] 벡터스토어 구축: {len(docs)}개, dim={embeddings.shape[1]}")
 
-    def search(self, query_embedding: np.ndarray, k=5):
+    def search(self, query_embedding: np.ndarray, k: int = 5):
         if self.embeddings is None or len(self.embeddings) == 0:
             print("[VS] 임베딩 없음")
             return []
 
         q = query_embedding[0]
-        sims = []
+
+        # 혹시라도 차원이 다르면 pad/truncate 로 맞춰줌
+        d_store = self.embeddings.shape[1]
+        d_q = q.shape[0]
+        if d_q < d_store:
+            q = np.pad(q, (0, d_store - d_q))
+        elif d_q > d_store:
+            q = q[:d_store]
+
+        sims: List[Tuple[int, float]] = []
+        q_norm = np.linalg.norm(q) + 1e-8
+
         for i, emb in enumerate(self.embeddings):
-            sim = float(
-                np.dot(q, emb) /
-                (np.linalg.norm(q) * np.linalg.norm(emb) + 1e-8)
-            )
+            denom = q_norm * (np.linalg.norm(emb) + 1e-8)
+            if denom == 0.0:
+                sim = 0.0
+            else:
+                sim = float(np.dot(q, emb) / denom)
             sims.append((i, sim))
 
         sims.sort(key=lambda x: x[1], reverse=True)
@@ -199,41 +214,25 @@ class RAGSystem:
             self.db.disconnect()
             return False
 
-        # texts = [str(d["chunk_text"])[:800] for d in docs]
-        # embeddings = embed_with_jina(texts) 주석처리
-        
-        emb_list = []
-        valid_docs = []
+        # DB embedding 컬럼은 현재 사용하지 않고,
+        # chunk_text 기반 로컬 임베딩으로 일관되게 구축
+        texts = [str(d["chunk_text"]) for d in docs]
+        print(f"[EMBED] 청크 수: {len(texts)}개, dim={LOCAL_EMBED_DIM}")
+        embeddings = simple_embed(texts, dim=LOCAL_EMBED_DIM)
 
-        for d in docs:
-            raw = d.get("embedding")
-            if raw is None:
-                continue
-            if isinstance(raw, str):
-                try:
-                    vec = json.loads(raw)
-                except Exception:
-                    continue
-            else:
-                # 이미 리스트/array면 그대로
-                vec = raw
-            emb_list.append(vec)
-            valid_docs.append(d)
-        if not emb_list:
-            print("[VS] embedding 데이터가 하나도 없습니다.")
-            self.db.disconnect()
-            return False
-
-        embeddings = np.array(emb_list, dtype="float32")
         self.vs.load(docs, embeddings)
 
         self.db.disconnect()
-        print(f"[VS] 벡터스토어 구축: {len(valid_docs)}개")
         print("=== 초기화 완료 ===\n")
         return True
 
     def answer(self, question: str):
-        q_emb = embed_with_jina([question])
+        # 질문도 동일한 로컬 임베딩으로 처리
+        if self.vs.embeddings is None:
+            return {"answer": "RAG가 초기화되지 않았습니다.", "sources": []}
+
+        dim = self.vs.embeddings.shape[1]
+        q_emb = simple_embed([question], dim=dim)
         retrieved = self.vs.search(q_emb, k=5)
 
         if not retrieved:
@@ -280,7 +279,7 @@ def init_rag():
     global _rag_instance
     if _rag_instance is None:
         rag = RAGSystem()
-        rag.initialize()  # 기본 limit=1000
+        rag.initialize()
         _rag_instance = rag
     return True
 
