@@ -116,7 +116,7 @@ class DatabaseConnector:
             self.connection.close()
             self.connection = None
 
-    def get_policy_chunks(self, limit: int = 20000):
+    def get_policy_chunks(self, limit: int = 2000):
         """
         DB_InsData.insurance_clauses 에서 약관 청크를 읽어온다.
         각 row가 곧 하나의 청크.
@@ -186,7 +186,7 @@ class RAGSystem:
         self.db = DatabaseConnector()
         self.vs = VectorStore()
 
-    def initialize(self, limit: int = 20000):
+    def initialize(self, limit: int = 2000):
         print("\n=== RAG 초기화 ===")
 
         if not self.db.connect():
