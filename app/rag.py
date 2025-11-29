@@ -130,7 +130,7 @@ class DatabaseConnector:
                 SELECT
                     id          AS chunk_id,
                     product_id  AS product_id,
-                    COALESCE(search_text, original_text) AS chunk_text
+                    COALESCE(search_text, original_text) AS chunk_text,
                     embedding   AS embedding
                 FROM insurance_clauses
                 WHERE COALESCE(search_text, original_text) IS NOT NULL
