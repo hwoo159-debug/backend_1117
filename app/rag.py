@@ -196,26 +196,40 @@ class RAGSystem:
 
         docs = self.db.get_policy_chunks(limit)
         if not docs:
+            print("[DB] 약관 데이터가 없습니다.")
             self.db.disconnect()
             return False
 
         # texts = [str(d["chunk_text"])[:800] for d in docs]
         # embeddings = embed_with_jina(texts) 주석처리
-          emb_list = []
+        
+        emb_list = []
+        valid_docs = []
+
         for d in docs:
             raw = d.get("embedding")
+            if raw is None:
+                continue
             if isinstance(raw, str):
-                # 문자열이면 JSON 리스트 파싱
-                vec = json.loads(raw)
+                try:
+                    vec = json.loads(raw)
+                except Exception:
+                    continue
             else:
                 # 이미 리스트/array면 그대로
                 vec = raw
             emb_list.append(vec)
+            valid_docs.append(d)
+        if not emb_list:
+            print("[VS] embedding 데이터가 하나도 없습니다.")
+            self.db.disconnect()
+            return False
 
         embeddings = np.array(emb_list, dtype="float32")
         self.vs.load(docs, embeddings)
 
         self.db.disconnect()
+        print(f"[VS] 벡터스토어 구축: {len(valid_docs)}개")
         print("=== 초기화 완료 ===\n")
         return True
 
