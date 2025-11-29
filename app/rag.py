@@ -116,23 +116,29 @@ class DatabaseConnector:
             self.connection.close()
             self.connection = None
 
-    def get_policy_chunks(self, limit: int = 1000):
+    def get_policy_chunks(self, limit: int = 20000):
+        """
+        DB_InsData.insurance_clauses 에서 약관 청크를 읽어온다.
+        각 row가 곧 하나의 청크.
+        """
         try:
             from psycopg2.extras import RealDictCursor
             cur = self.connection.cursor(cursor_factory=RealDictCursor)
-
+    
             cur.execute("""
                 SELECT
-                    id AS chunk_id,
-                    product_id,
-                    original_text AS chunk_text
+                    id          AS chunk_id,
+                    product_id  AS product_id,
+                    -- search_text가 비어 있으면 original_text로 fallback
+                    COALESCE(search_text, original_text) AS chunk_text
                 FROM insurance_clauses
+                WHERE COALESCE(search_text, original_text) IS NOT NULL
                 LIMIT %s
             """, (limit,))
-
+    
             rows = cur.fetchall()
             cur.close()
-            print(f"[DB] 로드 {len(rows)}개")
+            print(f"[DB] 보험약관 로드 {len(rows)}개")
             return rows
         except Exception as e:
             print(f"[DB 조회 오류] {e}")
@@ -180,7 +186,7 @@ class RAGSystem:
         self.db = DatabaseConnector()
         self.vs = VectorStore()
 
-    def initialize(self, limit: int = 1000):
+    def initialize(self, limit: int = 20000):
         print("\n=== RAG 초기화 ===")
 
         if not self.db.connect():
