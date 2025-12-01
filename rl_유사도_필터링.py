@@ -24,7 +24,6 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import warnings
 warnings.filterwarnings("ignore")
-
 ############################################################
 # Memory Cleanup
 ############################################################
@@ -1545,3 +1544,13 @@ if __name__ == "__main__":
     print(f"보험사별 평균 보상:")
     for company, reward in comparison['avg_reward_per_company'].items():
         print(f"  - {company}: {reward:.2f}")
+
+# rl_유사도_필터링.py 맨 아래 쪽에 추가
+
+def init_rag(limit: int = 20000):
+    # 기존 FastAPI가 호출하는 초기화 래퍼
+    return init_rag_with_rl(limit=limit)
+
+def answer_with_rag(question: str):
+    # 기존 FastAPI가 호출하는 답변 래퍼
+    return answer_question(question, enable_rl=True, enable_comparison=False)
